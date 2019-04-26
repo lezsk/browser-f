@@ -3,13 +3,12 @@ pipeline {
 	agent { 
 		dockerfile {
 			filename 'Dockerfile'
-			label '$dockerTag'
-			additionalBuildArgs '--build-arg USER=`whoami` --build-arg UID=`id -u` --build-arg GID=`id -g` .'
+			additionalBuildArgs '--build-arg USER=`whoami` --build-arg UID=`id -u` --build-arg GID=`id -g`'
 		} 
 	}
 	stages{
-		stage('Checkout'){
-			steps{
+		stage('Checkout') {
+			steps {
 				checkout scm
 				script{
 					dockerTag = readFile('mozilla-release/browser/config/version.txt').trim()
@@ -19,23 +18,61 @@ pipeline {
 		        """
 			}
 		}
-		stage('Build'){
-			steps{
+		stage('Build and Package') {
+			steps {
 				sh """#!/bin/bash -l
 		            set -x
 		            set -e
 		            echo '*** Build and Package the Browser ***'
 		            cd mozilla-release
+		            mv mozconfig.test mozconfig
 		            rm -rf objdir-frontend-android
 		            ./mach clobber
 		            ./mach build
+		            ./mach package
 		        """
 			}
 		}
+		stage('Publish and Archive') {
+			steps {
+				sh """#!/bin/bash -l
+		            set -x
+		            set -e
+		            echo '*** Publish Gecko Binaries To Maven ***'
+		            cd mozilla-release
+		            ./gradlew geckoview:publishWithGeckoBinariesDebugPublicationToMavenLocal
+		            ./mach android archive-geckoview
+		        """
+			}
+		}
+		stage('Upload to S3') {
+			environment {
+				BUILD_TYPE = 'x86'
+			}
+			
+			steps {
+				withCredentials([
+					[	
+						$class: 'UsernamePasswordMultiBinding', 
+						usernameVariable: 'AWS_ACCESS_KEY_ID', 
+						credentialsId: 'f1732e5f-3e84-47ad-9286-a5fa6657ec43', 
+						passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+					]
+				]) {
+					sh """#!/bin/bash -l
+			            set -x
+			            set -e
+			            echo '*** Uploading Maven to S3 ***'
+			            cd mozilla-release
+			            aws s3 sync --acl public-read --acl bucket-owner-full-control objdir-frontend-android/gradle/build/mobile/android/geckoview/maven s3://repository.cliqz.com/dist/maven
+			        """
+				}
+			}
+		}
 	}
-	post{
-		always{
-			echo 'Its been a long time'
+	post {
+		always {
+			echo 'Its Geckoview!!'
 		}
 	}
 }
