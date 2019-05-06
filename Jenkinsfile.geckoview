@@ -1,10 +1,10 @@
 def dockerTag
+def dockerImage
+def dockerImageName
+def volumeStr
 pipeline {
 	agent { 
-		dockerfile {
-			filename 'Dockerfile'
-			additionalBuildArgs '--build-arg USER=`whoami` --build-arg UID=`id -u` --build-arg GID=`id -g`'
-		} 
+		label "master"
 	}
 	stages{
 		stage('Checkout') {
@@ -18,55 +18,92 @@ pipeline {
 		        """
 			}
 		}
-		stage('Build and Package') {
+		stage ('Build base image'){
 			steps {
-				sh """#!/bin/bash -l
-		            set -x
-		            set -e
-		            echo '*** Build and Package the Browser ***'
-		            cd mozilla-release
-		            mv mozconfig.test mozconfig
-		            rm -rf objdir-frontend-android
-		            ./mach clobber
-		            ./mach build
-		            ./mach package
-		        """
-			}
-		}
-		stage('Publish and Archive') {
-			steps {
-				sh """#!/bin/bash -l
-		            set -x
-		            set -e
-		            echo '*** Publish Gecko Binaries To Maven ***'
-		            cd mozilla-release
-		            ./gradlew geckoview:publishWithGeckoBinariesDebugPublicationToMavenLocal
-		            ./mach android archive-geckoview
-		        """
-			}
-		}
-		stage('Upload to S3') {
-			environment {
-				BUILD_TYPE = 'x86'
-			}
-			
-			steps {
-				withCredentials([
-					[	
-						$class: 'UsernamePasswordMultiBinding', 
-						usernameVariable: 'AWS_ACCESS_KEY_ID', 
-						credentialsId: 'f1732e5f-3e84-47ad-9286-a5fa6657ec43', 
-						passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-					]
-				]) {
-					sh """#!/bin/bash -l
-			            set -x
-			            set -e
-			            echo '*** Uploading Maven to S3 ***'
-			            cd mozilla-release
-			            aws s3 sync --acl public-read --acl bucket-owner-full-control objdir-frontend-android/gradle/build/mobile/android/geckoview/maven s3://repository.cliqz.com/dist/maven
-			        """
+				echo 'Build docker image'
+				script{
+					volumeStr = "$WORKSPACE"
+					dockerImageName = "browser-f/geckoview:${dockerTag}"
+					dockerImage = docker.build(dockerImageName, '--build-arg USER=`whoami` --build-arg UID=`id -u` --build-arg GID=`id -g` -f Dockerfile .')
 				}
+			}
+		}
+		stage('Parallel Build'){
+			parallel {
+				stage('Build, Publish and Upload Arm to S3') {
+					agent{
+						docker {
+							image "browser-f/geckoview:66.0.3"
+						}
+					}
+					environment {
+						ANDROID_TARGET='arm-linux-androideabi'
+					}		
+					steps {
+						withCredentials([
+							[	
+								$class: 'UsernamePasswordMultiBinding', 
+								usernameVariable: 'AWS_ACCESS_KEY_ID', 
+								credentialsId: 'f1732e5f-3e84-47ad-9286-a5fa6657ec43', 
+								passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+							]
+						]) {
+							sh """#!/bin/bash -l
+					            set -x
+					            set -e
+					            echo '*** Build and Package the Browser ***'
+					            cd mozilla-release
+					            mv mozconfig.test mozconfig
+					            rm -rf objdir-frontend-android
+					            ./mach clobber
+					            ./mach build
+					            ./mach package
+					            echo '*** Publish Gecko Binaries To Maven ***'
+					            ./gradlew geckoview:publishWithGeckoBinariesDebugPublicationToMavenLocal
+				            	./mach android archive-geckoview
+					            echo '*** Uploading Maven to S3 ***'
+					            aws s3 sync --acl public-read --acl bucket-owner-full-control objdir-frontend-android/gradle/build/mobile/android/geckoview/maven s3://repository.cliqz.com/dist/maven
+					        """
+						}
+					}
+				}
+				stage('Build, Publish and Upload x86 to S3') {	
+					agent{
+						docker {
+							image "browser-f/geckoview:66.0.3"
+						}
+					}
+					environment {
+						ANDROID_TARGET='i686-linux-android'
+					}			
+					steps {
+						withCredentials([
+							[	
+								$class: 'UsernamePasswordMultiBinding', 
+								usernameVariable: 'AWS_ACCESS_KEY_ID', 
+								credentialsId: 'f1732e5f-3e84-47ad-9286-a5fa6657ec43', 
+								passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+							]
+						]) {
+							sh """#!/bin/bash -l
+					            set -x
+					            set -e
+					            echo '*** Build and Package the Browser ***'
+					            cd mozilla-release
+					            mv mozconfig.test mozconfig
+					            rm -rf objdir-frontend-android
+					            ./mach clobber
+					            ./mach build
+					            ./mach package
+					            echo '*** Publish Gecko Binaries To Maven ***'
+					            ./gradlew geckoview:publishWithGeckoBinariesDebugPublicationToMavenLocal
+				            	./mach android archive-geckoview
+					            echo '*** Uploading Maven to S3 ***'
+					            aws s3 sync --acl public-read --acl bucket-owner-full-control objdir-frontend-android/gradle/build/mobile/android/geckoview/maven s3://repository.cliqz.com/dist/maven
+					        """
+						}
+					}
+				}				
 			}
 		}
 	}
